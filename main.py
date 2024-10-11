@@ -6,16 +6,14 @@ import av
 def main():
     video_path = Path(r"")
     begin = 0.0  # in seconds
-    end = float('inf')  # in seconds
+    end = float("inf")  # in seconds
     output_path = Path("cut_video.mp4")
 
     input_container = av.open(str(video_path))
-    (in_vstream,) = input_container.streams.video
-    (in_astream,) = input_container.streams.audio
-
     output_container = av.open(str(output_path), "w")
+
+    (in_vstream,) = input_container.streams.video
     out_vstream = output_container.add_stream(template=in_vstream)
-    out_astream = output_container.add_stream(template=in_astream)
 
     # seek to the previous keyframe nearsest to the begin
     # all packets before this keyframe can be safely skipped to reduce the output size
@@ -29,12 +27,20 @@ def main():
     assert prev_keyframe_packet.is_keyframe
     assert prev_keyframe_packet.pts is not None
     video_begin_ts = prev_keyframe_packet.pts
-    audio_begin_ts = int(video_begin_ts * in_vstream.time_base / in_astream.time_base)
     # next() on input_container.demux() will change the internal state of the input container
     # so we need to seek again
     input_container.seek(video_begin_ts, backward=True, stream=in_vstream)
 
-    packets = input_container.demux([in_vstream, in_astream])
+    match in_astream_tuple := input_container.streams.audio:
+        case (s,):
+            out_astream = output_container.add_stream(template=s)
+            audio_begin_ts = int(video_begin_ts * in_vstream.time_base / s.time_base)
+        case ():
+            out_astream = None
+            audio_begin_ts = 0
+        case _:
+            raise ValueError("No audio stream found")
+    packets = input_container.demux([in_vstream, *in_astream_tuple])
 
     for packet in packets:
         # skip the "flushing" packets that `demux` generates
@@ -55,6 +61,7 @@ def main():
                 output_stream = out_vstream
                 begin_ts = video_begin_ts
             case "audio":
+                assert out_astream is not None
                 output_stream = out_astream
                 begin_ts = audio_begin_ts
             case _:
